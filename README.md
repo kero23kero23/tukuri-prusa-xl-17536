@@ -93,6 +93,8 @@ tkr17536 GSTAT=0x01 DRV=0x00000000 24V=23950mV n=1 skip=0 de=0 r=13
 
 有限会社丹羽電機（愛知県）／つくりこむ.jp — <https://www.tukuri.com/>
 
+事例記事（経緯と試験の結果）: <https://www.tukuri.com/prusaxl17536.html>
+
 ---
 
 ## English
@@ -177,3 +179,5 @@ tkr17536 GSTAT=0x01 DRV=0x00000000 24V=23950mV n=1 skip=0 de=0 r=13
 ### Author
 
 Niwa Denki (有限会社丹羽電機, Aichi, Japan) / つくりこむ.jp — <https://www.tukuri.com/>
+
+Case study (Japanese): <https://www.tukuri.com/prusaxl17536.html>
