@@ -1,0 +1,21 @@
+A1 normal ok
+A2 reset ok: E tkr17536 GSTAT=0x01 DRV=0x00000000 24V=23950mV n=1 skip=0 de=0 r=0
+A3 uv_cp x3000 ok, logs=3
+A4 glitch ok
+A5 glitch+reset ok
+A6 persistent drv_err stops at event 10 ok
+A7 sporadic drv_err no stop ok
+A8 burst 9 + decay ok
+A9 ot immediate stop ok
+A10 invalid DRV not ot ok
+A11 wraparound ok
+B1 no record -> r=0 ok: E tkr17536 GSTAT=0x01 DRV=0x00000000 24V=23950mV n=1 skip=0 de=0 r=0
+B2 replay after push, 13 regs in push order, IHOLD_IRUN=0x000A1A1A ok: E tkr17536 GSTAT=0x01 DRV=0x00000000 24V=23950mV n=1 skip=0 de=0 r=13
+B3 latest value wins ok
+B4 other addresses ignored ok
+B5 write during replay -> replayed again (26 writes), final IHOLD_IRUN=0x000A1A1A ok
+B6 endless buddy writes -> bounded to 3 rounds (39 writes) ok
+B7 1000 resets, each replayed, no stop ok
+B8 drv_err replays and still stops at 10 ok
+B9 longest line 88 chars (<128): E tkr17536 GSTAT=0x07 DRV=0xfffffffe 24V=23950mV n=4000000001 skip=4000000000 de=10 r=13
+ALL PASS

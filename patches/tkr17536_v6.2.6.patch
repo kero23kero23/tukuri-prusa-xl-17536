@@ -1,0 +1,224 @@
+diff --git a/src/puppy/dwarf/modbus/ModbusControl.cpp b/src/puppy/dwarf/modbus/ModbusControl.cpp
+index 8f6f0c4..49adce6 100644
+--- a/src/puppy/dwarf/modbus/ModbusControl.cpp
++++ b/src/puppy/dwarf/modbus/ModbusControl.cpp
+@@ -59,6 +59,7 @@ bool OnReadFIFO(uint16_t address, uint32_t *pValueCount, std::array<uint16_t, MO
+ void OnTmcReadRequest(uint16_t value);
+ void OnTmcWriteRequest();
+ void SetDwarfSelected(bool selected);
++namespace tkr17536 { void record_buddy_tmc_write(uint8_t address, uint32_t value); } // tukuri patch
+ 
+ bool Init() {
+     modbus::ModbusProtocol::SetOnReadInputRegisterCallback(OnReadInputRegister);
+@@ -149,6 +150,9 @@ void OnTmcWriteRequest() {
+     uint32_t value = ModbusRegisters::GetRegValue(ModbusRegisters::SystemHoldingRegister::tmc_write_request_value_1) | (ModbusRegisters::GetRegValue(ModbusRegisters::SystemHoldingRegister::tmc_write_request_value_2) << 16);
+     uint8_t address = ModbusRegisters::GetRegValue(ModbusRegisters::SystemHoldingRegister::tmc_write_request_address);
+ 
++    // tukuri patch: remember the buddy's value first, then write it
++    // (see tkr17536 below for the ordering argument)
++    tkr17536::record_buddy_tmc_write(address, value);
+     stepperE0.write(address, value);
+ 
+     log_info(ModbusControl, "Write TMC reg=%i, val=%" PRIu32, address, value);
+@@ -302,9 +306,199 @@ static inline int16_t clamp_to_int16(float temperature) {
+     return std::clamp(temperature, float(INT16_MIN), float(INT16_MAX));
+ }
+ 
++// ---------------------------------------------------------------------------
++// tukuri patch "tkr17536" (つくりこむ.jp / 有限会社丹羽電機, 2026-10) - based on v6.2.6
++// Investigation, code and documents: AI (Anthropic Claude). Decisions and
++// verification on a real Original Prusa XL: the author.
++//
++// Original behaviour: any non-zero read of TMC2130 GSTAT (0x01, read-and-clear)
++// raised TMC_FAULT -> buddy red screen #17536 "Extruder motor is not spinning".
++//
++// GSTAT has only three bits: bit0 reset (IC was reset, all registers back to
++// defaults = driver off), bit1 drv_err (shut down by overtemperature or short to
++// GND), bit2 uv_cp (charge pump undervoltage, driver disabled).
++//
++// This patch follows Marlin's own monitor_tmc_driver() practice
++// (lib/Marlin/Marlin/src/feature/tmc_util.cpp): impossible reads are ignored as
++// SPI glitches, and a stop is issued only after repeated driver errors.
++//  1. A value with bits outside 0..2 is an invalid read: read once more and
++//     ignore it if the re-read is 0 or invalid again.
++//  2. On a valid event the driver is switched off (TOFF=0) and the complete
++//     configuration is written back with TMC2130Stepper::push() (same call
++//     Marlin uses in restore_trinamic_drivers()), so the extruder resumes
++//     immediately.
++//  3. GSTAT, DRV_STATUS and the 24V reading are logged (one short line, at most
++//     once per second; it reaches "Save Logs To File" as Dwarf_N lines).
++//  4. drv_err (overtemperature / short) keeps the original stop when it
++//     repeats: leaky counter +1 per drv_err event, -1 per second without one,
++//     TMC_FAULT (= original #17536) at 10 (Marlin STOP_ON_ERROR count).
++//     Overtemperature (DRV_STATUS.ot) keeps the original immediate stop.
++//  5. After push(), the values the buddy last wrote are written again. The
++//     buddy configures this driver over Modbus (OnTmcWriteRequest -> raw
++//     stepperE0.write()), which does not update the shadow registers push()
++//     uses, so push() alone would restore the Dwarf's own defaults
++//     (E0_CURRENT 400 mA, Configuration_XL_Dwarf_adv.h) instead of the
++//     buddy's (E0_CURRENT 450 mA, Configuration_XL_adv.h). The log line gets
++//     r = number of registers replayed.
++// reset / uv_cp events never stop the print by themselves.
++// ---------------------------------------------------------------------------
++namespace tkr17536 {
++constexpr uint32_t GSTAT_RESET = 1UL << 0;
++constexpr uint32_t GSTAT_DRV_ERR = 1UL << 1;
++constexpr uint32_t GSTAT_UV_CP = 1UL << 2;
++constexpr uint32_t GSTAT_VALID_MASK = GSTAT_RESET | GSTAT_DRV_ERR | GSTAT_UV_CP;
++constexpr uint32_t DRV_STATUS_OT = 1UL << 25;
++constexpr uint8_t DRV_ERR_STOP_COUNT = 10;
++constexpr uint32_t DRV_ERR_DECAY_MS = 1000;
++constexpr uint32_t LOG_MIN_INTERVAL_MS = 1000;
++
++static uint8_t drv_err_count = 0;
++static uint32_t drv_err_last_decay_ms = 0;
++static uint32_t last_event_log_ms = 0;
++static uint32_t last_glitch_log_ms = 0;
++static bool event_logged_once = false;
++static bool glitch_logged_once = false;
++static uint32_t events_total = 0;
++static uint32_t events_not_logged = 0;
++static uint32_t glitches_total = 0;
++static bool stop_issued = false;
++
++// --- 5: last values written by the buddy ----------------------------------
++// Registers written by the buddy's TMC2130Stepper::push(), in the same order
++// (GCONF, IHOLD_IRUN, TPOWERDOWN, TPWMTHRS, TCOOLTHRS, THIGH, XDIRECT, VDCMIN,
++// CHOPCONF, COOLCONF, DCCTRL, PWMCONF, ENCM_CTRL). Other addresses are ignored.
++constexpr uint8_t BUDDY_REGS[] = { 0x00, 0x10, 0x11, 0x13, 0x14, 0x15, 0x2D, 0x33, 0x6C, 0x6D, 0x6E, 0x70, 0x72 };
++constexpr size_t BUDDY_REG_COUNT = sizeof(BUDDY_REGS) / sizeof(BUDDY_REGS[0]);
++static_assert(BUDDY_REG_COUNT <= 32, "valid mask is 32 bits");
++constexpr int REPLAY_MAX_ROUNDS = 3;
++// Written only by the Modbus thread (record_buddy_tmc_write), read by the
++// Marlin loop (replay_buddy_tmc_config). One writer, aligned 32-bit volatile
++// accesses (single access on Cortex-M0+, no LDREX/STREX needed). The writer
++// stores value -> mask -> generation, and only then writes the chip:
++//  - reader runs before the record: the buddy's own chip write comes later
++//  - reader runs between record and chip write: it replays the new value
++//  - writer runs during the replay: generation changes -> replay again
++static volatile uint32_t buddy_value[BUDDY_REG_COUNT] = {};
++static volatile uint32_t buddy_valid_mask = 0;
++static volatile uint32_t buddy_generation = 0;
++
++void record_buddy_tmc_write(uint8_t address, uint32_t value) {
++    const uint8_t reg = address & 0x7F; // the buddy sends the address with the write bit (0x80)
++    for (size_t i = 0; i < BUDDY_REG_COUNT; i++) {
++        if (BUDDY_REGS[i] == reg) {
++            buddy_value[i] = value;
++            buddy_valid_mask = buddy_valid_mask | (1UL << i);
++            buddy_generation = buddy_generation + 1;
++            return;
++        }
++    }
++}
++
++// Writes the recorded values again (raw write, shadow registers untouched).
++// Returns the number of registers written in the last round (0 = the buddy
++// has not written anything yet -> Dwarf defaults from push() stay).
++static int replay_buddy_tmc_config() {
++    int written = 0;
++    for (int round = 0; round < REPLAY_MAX_ROUNDS; round++) {
++        const uint32_t generation = buddy_generation;
++        const uint32_t mask = buddy_valid_mask;
++        written = 0;
++        for (size_t i = 0; i < BUDDY_REG_COUNT; i++) {
++            if (mask & (1UL << i)) {
++                stepperE0.write(BUDDY_REGS[i], buddy_value[i]);
++                written++;
++            }
++        }
++        if (buddy_generation == generation) {
++            break; // no buddy write during the replay
++        }
++    }
++    return written;
++}
++} // namespace tkr17536
++
+ static void update_fault_status() {
+-    const uint32_t gstat = stepperE0.read(0x01);
+-    if (gstat != 0) {
++    using namespace tkr17536;
++    const uint32_t now = ticks_ms();
++
++    // leaky decay of the drv_err counter
++    if (drv_err_count > 0 && (now - drv_err_last_decay_ms) >= DRV_ERR_DECAY_MS) {
++        drv_err_count--;
++        drv_err_last_decay_ms = now;
++    }
++
++    uint32_t gstat = stepperE0.read(0x01);
++    if (gstat == 0) {
++        return;
++    }
++
++    if (gstat & ~GSTAT_VALID_MASK) {
++        // impossible value -> SPI read glitch, read once more
++        const uint32_t first = gstat;
++        gstat = stepperE0.read(0x01);
++        glitches_total++;
++        if (!glitch_logged_once || (now - last_glitch_log_ms) >= LOG_MIN_INTERVAL_MS) {
++            log_warning(ModbusControl, "tkr17536 badread GSTAT=0x%08lx reread=0x%08lx g=%lu",
++                static_cast<unsigned long>(first), static_cast<unsigned long>(gstat), static_cast<unsigned long>(glitches_total));
++            last_glitch_log_ms = now;
++            glitch_logged_once = true;
++        }
++        if (gstat == 0 || (gstat & ~GSTAT_VALID_MASK)) {
++            return;
++        }
++    }
++
++    // valid driver event: capture status, then restore the driver configuration
++    const uint32_t drv_status = stepperE0.DRV_STATUS();
++    const long v24_mV = static_cast<long>(advancedpower.Get24VVoltage() * 1000);
++    // Switch the driver off (CHOPCONF = 0 -> TOFF = 0) before restoring it: a
++    // short-to-GND shutdown stays latched until the driver is disabled by TOFF=0
++    // or ENN (TMC2130 datasheet). write() does not touch the shadow registers,
++    // push() then writes the complete stored configuration back, and the
++    // buddy's last values (450 mA etc.) are written over it (item 5).
++    stepperE0.write(::CHOPCONF_t::address, 0); // TMC2130 CHOPCONF (0x6C)
++    stepperE0.push();
++    const int replayed = replay_buddy_tmc_config();
++    events_total++;
++
++    if (gstat & GSTAT_DRV_ERR) {
++        if (drv_err_count == 0) {
++            drv_err_last_decay_ms = now;
++        }
++        if (drv_err_count < 255) {
++            drv_err_count++;
++        }
++    }
++    // Overtemperature (DRV_STATUS.ot) is the condition Marlin itself stops on:
++    // keep the original immediate stop for it. 0x00000000 / 0xFFFFFFFF are not
++    // valid DRV_STATUS reads (Marlin monitor_tmc_driver() ignores them).
++    if (drv_status != 0 && drv_status != 0xFFFFFFFFUL && (drv_status & DRV_STATUS_OT)) {
++        drv_err_count = DRV_ERR_STOP_COUNT;
++    }
++
++    const bool stop_now = !stop_issued && drv_err_count >= DRV_ERR_STOP_COUNT;
++    if (!event_logged_once || stop_now || (now - last_event_log_ms) >= LOG_MIN_INTERVAL_MS) {
++        // The Dwarf log ring buffer is only 256 bytes (log_dest_bufflog.cpp) and
++        // is pulled by the buddy every 200 ms -> one short line per event.
++        // GSTAT bits: 0 reset, 1 drv_err, 2 uv_cp
++        // DRV_STATUS bits: 25 ot, 26 otpw, 27 s2ga, 28 s2gb, 29 ola, 30 olb
++        // n = events so far, skip = events not logged since the last line,
++        // de = drv_err counter (stop at 10), r = buddy registers replayed (item 5)
++        log_error(ModbusControl, "tkr17536 GSTAT=0x%02lx DRV=0x%08lx 24V=%ldmV n=%lu skip=%lu de=%d r=%d",
++            static_cast<unsigned long>(gstat), static_cast<unsigned long>(drv_status), v24_mV,
++            static_cast<unsigned long>(events_total), static_cast<unsigned long>(events_not_logged),
++            static_cast<int>(drv_err_count), replayed);
++        last_event_log_ms = now;
++        event_logged_once = true;
++        events_not_logged = 0;
++    } else {
++        events_not_logged++;
++    }
++
++    if (stop_now) {
++        // repeated overtemperature / short: keep the original safety stop (#17536)
++        stop_issued = true;
++        log_error(ModbusControl, "tkr17536 drv_err x%d -> stop (orig #17536)", static_cast<int>(drv_err_count));
+         ModbusRegisters::SetRegValue(ModbusRegisters::SystemInputRegister::fault_status, static_cast<uint16_t>(dwarf_shared::errors::FaultStatusMask::TMC_FAULT));
+     }
+ }
