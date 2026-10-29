@@ -61,6 +61,7 @@ tkr17536 GSTAT=0x01 DRV=0x00000000 24V=23950mV n=1 skip=0 de=0 r=13
 | PC 上の模擬試験（20項目。`test/`） | 全項目合格 |
 | 実機（作者の XL、ツール1、揺すり試験） | 78回のリセット（掴んだ直後6回＋コネクタを揺すった区間72回）で、一度も止まらずに復帰した。ログに残った行はすべて r=13（メイン基板の設定13項目を書き戻した）。赤画面なし |
 | カバーを替えた後（同じ試験） | リセット0回 |
+| **tkr1 そのもの**（作者の XL、ツール1、2026-10-29） | Version Info で `6.2.6-tkr1+8948` を確認。ノズルを 170℃ にして、掴む6回・置く5回（約4分）。リセット0回、赤画面なし。ツールを掴むたびにメイン基板の設定の書き込みがログに残っている（通常動作） |
 
 ### 版名
 
@@ -69,7 +70,7 @@ tkr17536 GSTAT=0x01 DRV=0x00000000 24V=23950mV n=1 skip=0 de=0 r=13
 
 | 公表版 | 社内版 | 関係 |
 |---|---|---|
-| 6.2.6-tkr1 | 6.2.6-ndk2 | 中身は同じ。違うのは版名とログの目印（社内版は ndk17536）だけ。機械語を比べ、違いが文字列とハッシュだけであることを確かめた。上の実機の結果は社内版で取ったもの。公開の時点では、tkr1 そのものでの実機運転はまだしていない（結果が出たら上の表に追記する） |
+| 6.2.6-tkr1 | 6.2.6-ndk2 | 中身は同じ。違うのは版名とログの目印（社内版は ndk17536）だけ。機械語を比べ、違いが文字列とハッシュだけであることを確かめた。揺すり試験の結果は社内版で取ったもの。tkr1 そのものの実機運転は 2026-10-29 に行った（上の表の最終行） |
 
 ### ファイル
 
@@ -148,6 +149,7 @@ tkr17536 GSTAT=0x01 DRV=0x00000000 24V=23950mV n=1 skip=0 de=0 r=13
 | Host test on a PC (20 cases, `test/`) | all passed |
 | Real printer (author's XL, tool 1, wiggle test) | 78 resets (6 right after the pick + 72 while wiggling the connector), recovered every time without stopping; every logged line shows r=13 (13 main board settings written back); no red screen |
 | After the cover was replaced (same test) | 0 resets |
+| **tkr1 itself** (author's XL, tool 1, 2026-10-29) | Version Info shows `6.2.6-tkr1+8948`. Nozzle at 170 °C, tool picked 6 times and parked 5 times (about 4 min). 0 resets, no red screen. The main board's register writes on every pick appear in the log (normal operation) |
 
 ### Version name
 
@@ -156,7 +158,7 @@ tkr17536 GSTAT=0x01 DRV=0x00000000 24V=23950mV n=1 skip=0 de=0 r=13
 
 | Public | Internal | Relation |
 |---|---|---|
-| 6.2.6-tkr1 | 6.2.6-ndk2 | Same content. Only the version name and the log marker differ (internal: ndk17536). A binary comparison showed that only strings and hashes differ. The hardware results above were taken with the internal build. At the time of publication, tkr1 itself has not yet been run on the printer (the result will be added to the table above) |
+| 6.2.6-tkr1 | 6.2.6-ndk2 | Same content. Only the version name and the log marker differ (internal: ndk17536). A binary comparison showed that only strings and hashes differ. The wiggle test results were taken with the internal build; tkr1 itself was run on the printer on 2026-10-29 (last row of the table above) |
 
 ### Files
 
